@@ -1,6 +1,6 @@
 import open3d as o3d
 
-def remove_noise(pcd, sor_neighbors=20, sor_std_ratio=2.0, ror_points=16, ror_radius=0.5):
+def remove_noise(pcd, sor_neighbors, sor_std_ratio, ror_points, ror_radius):
     # Statistical Outlier Removal (SOR)
     cl, ind = pcd.remove_statistical_outlier(nb_neighbors=sor_neighbors, std_ratio=sor_std_ratio)
     pcd = pcd.select_by_index(ind)

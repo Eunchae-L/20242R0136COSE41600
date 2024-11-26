@@ -1,1 +1,4 @@
 data
+autoenv
+__pycache__
+video
