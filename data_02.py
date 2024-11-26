@@ -3,58 +3,55 @@ import numpy as np
 import os
 import cv2
 from sklearn.cluster import DBSCAN
-from scipy.spatial.distance import cdist
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 
-# Helper function to load PCD files
 def load_pcd_files(pcd_dir):
     pcd_files = sorted([os.path.join(pcd_dir, file) for file in os.listdir(pcd_dir) if file.endswith('.pcd')])
     return pcd_files
 
-# Function to preprocess point cloud: noise removal, downsampling, clustering
-def preprocess_point_cloud(pcd):
-    pcd, ind = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
-    pcd = pcd.voxel_down_sample(voxel_size=0.3)
+def preprocess_point_cloud(pcd, voxel_size=0.5, eps=0.5, min_samples=10):
+    pcd, ind = pcd.remove_statistical_outlier(nb_neighbors=10, std_ratio=1.5)
+    pcd = pcd.voxel_down_sample(voxel_size=voxel_size)
     points = np.asarray(pcd.points)
 
-    # Perform clustering (DBSCAN)
-    clustering = DBSCAN(eps=0.2, min_samples=10).fit(points)
+    clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(points)
     labels = clustering.labels_
 
-    # Colorize clusters
     max_label = labels.max() + 1
     colors = np.random.uniform(0, 1, size=(max_label, 3))
-    colors = np.vstack([colors, [0, 0, 0]])  # Add color for noise points
+    colors = np.vstack([colors, [0, 0, 0]])  # Noise color
     pcd.colors = o3d.utility.Vector3dVector(colors[labels])
 
     return pcd, labels
 
 movement_vectors = defaultdict(list)
 
-def is_person_by_motion(cluster_id, current_centroid, direction_threshold=0.1, N=100):
-    """프레임 간 이동 방향성을 기반으로 사람인지 판단"""
-    global movement_vectors
-
+def is_person_by_motion(cluster_id, current_centroid, direction_threshold=0.1, N=10):
     if cluster_id not in movement_vectors:
         movement_vectors[cluster_id].append(current_centroid)
         return False
 
-    # Calculate movement vector
     previous_centroid = movement_vectors[cluster_id][-1]
     movement_vector = current_centroid - previous_centroid
 
-    # Update movement history
     movement_vectors[cluster_id].append(current_centroid)
     if len(movement_vectors[cluster_id]) > N:
         movement_vectors[cluster_id].pop(0)
 
-    # Check direction consistency
     if len(movement_vectors[cluster_id]) >= N:
         avg_direction = np.mean(np.diff(movement_vectors[cluster_id], axis=0), axis=0)
         if np.linalg.norm(avg_direction) > direction_threshold:
             return True
 
     return False
+
+def extract_keyframes_by_ratio(pcd_files, ratio=0.1):
+    total_frames = len(pcd_files)
+    step = max(1, int(1 / ratio))
+    keyframes = pcd_files[::step]
+    print(f"Total frames: {total_frames}, Selected keyframes: {len(keyframes)}")
+    return keyframes
 
 def render_pcd_and_save_video(pcd_files, output_dir, video_name):
     vis = o3d.visualization.Visualizer()
@@ -67,65 +64,58 @@ def render_pcd_and_save_video(pcd_files, output_dir, video_name):
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     video_writer = cv2.VideoWriter(os.path.join(output_dir, f"{video_name}.mp4"), fourcc, fps, (frame_width, frame_height))
 
-    previous_centroids = {}
+    with ThreadPoolExecutor() as executor:
+        future_results = list(executor.map(process_frame, pcd_files))
 
-    for idx, pcd_file in enumerate(pcd_files):
-        print(f"Processing frame {idx + 1}/{len(pcd_files)}: {pcd_file}")
+    for idx, (pcd, labels) in enumerate(future_results):
+        print(f"Rendering frame {idx + 1}/{len(pcd_files)}")
 
-        # Load and preprocess point cloud
-        pcd = o3d.io.read_point_cloud(pcd_file)
-        pcd, labels = preprocess_point_cloud(pcd)
-
-        # Generate bounding boxes for clusters
         cluster_ids = np.unique(labels)
         bounding_boxes = []
+        person_cluster = None
+        max_motion = -1
+
         for cluster_id in cluster_ids:
             if cluster_id == -1:
-                continue  # Skip noise points
+                continue
 
             cluster_points = np.asarray(pcd.points)[labels == cluster_id]
             cluster_pcd = o3d.geometry.PointCloud()
             cluster_pcd.points = o3d.utility.Vector3dVector(cluster_points)
 
-            # Calculate current centroid
             current_centroid = np.mean(cluster_points, axis=0)
 
-            # Check if cluster represents a person by motion
             if is_person_by_motion(cluster_id, current_centroid):
-                bbox_color = (1, 0, 0)  # Red for person
-            else:
-                bbox_color = (0, 1, 0)  # Green for others
+                motion_magnitude = np.linalg.norm(np.mean(np.diff(movement_vectors[cluster_id], axis=0), axis=0))
+                if motion_magnitude > max_motion:
+                    max_motion = motion_magnitude
+                    person_cluster = cluster_pcd
 
-            # Generate bounding box
-            aabb = cluster_pcd.get_axis_aligned_bounding_box()
-            scale_factor = 4.0
-            aabb = aabb.scale(scale_factor, aabb.get_center())
-            aabb.color = bbox_color
+        if person_cluster:
+            aabb = person_cluster.get_axis_aligned_bounding_box()
+            aabb.color = (1, 0, 0)
             bounding_boxes.append(aabb)
 
         vis.add_geometry(pcd)
-        vis.add_geometry(bbox)
-
         for bbox in bounding_boxes:
-            vis.update_geometry(bbox)
+            vis.add_geometry(bbox)
 
-        # Render and capture frame
         vis.poll_events()
         vis.update_renderer()
         frame = np.asarray(vis.capture_screen_float_buffer(do_render=True)) * 255
         frame = frame.astype(np.uint8)
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
-        # Write frame to video
         video_writer.write(frame)
-
-        # Clear geometries
         vis.clear_geometries()
 
     vis.destroy_window()
     video_writer.release()
     print(f"Video saved to {os.path.join(output_dir, video_name)}.mp4")
 
+def process_frame(pcd_file):
+    pcd = o3d.io.read_point_cloud(pcd_file)
+    return preprocess_point_cloud(pcd)
 
 # Directory setup
 scenario = "02_straight_duck_walk"  
@@ -133,14 +123,12 @@ input_root_dir = "./data"
 output_root_dir = "./output"
 os.makedirs(output_root_dir, exist_ok=True)
 
-# Process a single scenario
 print(f"Processing scenario: {scenario}")
 pcd_dir = os.path.join(input_root_dir, scenario, 'pcd')
 output_dir = os.path.join(output_root_dir, scenario)
 os.makedirs(output_dir, exist_ok=True)
 
-# Load PCD files
 pcd_files = load_pcd_files(pcd_dir)
+keyframes = extract_keyframes_by_ratio(pcd_files, ratio=0.1)
 
-# Render PCD and save as a video
-render_pcd_and_save_video(pcd_files, output_dir, scenario)
+render_pcd_and_save_video(keyframes, output_dir, scenario)
