@@ -9,7 +9,7 @@ from collections import defaultdict
 # Helper function to load PCD files
 def load_pcd_files(pcd_dir):
     pcd_files = sorted([os.path.join(pcd_dir, file) for file in os.listdir(pcd_dir) if file.endswith('.pcd')])
-    return pcd_files[:2]  # Limit to the first 20 files for testing
+    return pcd_files  # Limit to the first 20 files for testing
 
 # Function to preprocess point cloud: noise removal, downsampling, clustering
 def preprocess_point_cloud(pcd):
