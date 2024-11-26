@@ -15,7 +15,7 @@ print(f"OPEN3D_DEVICE: {os.getenv('OPEN3D_DEVICE')}")
 
 # 시나리오 디렉토리 설정
 root_dir = "data"
-scenario_name = "01_straight_walk" 
+scenario_name = "01_straight_walk"
 scenario_path = os.path.join(root_dir, scenario_name)
 
 if not os.path.exists(scenario_path):
@@ -33,8 +33,6 @@ fps = 10
 
 last_valid_bbox = None  # 이전 프레임의 유효한 바운딩 박스 저장
 
-frame_interval = 5  # 프레임 간 이동량 계산 간격
-
 def render_to_frame(pcd, bounding_boxes, width=1280, height=720):
     """PCD와 바운딩 박스를 렌더링하여 프레임으로 반환"""
     vis = o3d.visualization.Visualizer()
@@ -51,12 +49,13 @@ def render_to_frame(pcd, bounding_boxes, width=1280, height=720):
     vis.destroy_window()
     return frame.astype(np.uint8)
 
-def calculate_cluster_movements(frames, movement_threshold=0.5, interval=3):
+def calculate_cluster_movements(frames, movement_threshold=0.5):
+    """프레임 간 클러스터 이동량을 계산하고 이동한 클러스터만 반환"""
     tracked_clusters = []
     previous_clusters = {}
-    cluster_movements = {}
+    moving_clusters = {}  # 이동량이 기준을 넘은 클러스터 저장
 
-    for frame_id in range(0, len(frames), interval):
+    for frame_id in range(len(frames)):
         current_clusters = frames[frame_id]
         matched_clusters = {}
 
@@ -68,27 +67,36 @@ def calculate_cluster_movements(frames, movement_threshold=0.5, interval=3):
             cost_matrix = np.zeros((len(previous_ids), len(current_ids)))
             for i, prev_id in enumerate(previous_ids):
                 for j, curr_id in enumerate(current_ids):
-                    cost_matrix[i, j] = np.linalg.norm(previous_clusters[prev_id] - current_clusters[curr_id][0])
+                    cost_matrix[i, j] = np.linalg.norm(
+                        np.array(previous_clusters[prev_id]) - np.array(current_clusters[curr_id][0])
+                    )
 
             # 최소 비용 매칭
             row_ind, col_ind = linear_sum_assignment(cost_matrix)
             for r, c in zip(row_ind, col_ind):
                 prev_id = previous_ids[r]
                 curr_id = current_ids[c]
-                matched_clusters[curr_id] = current_clusters[curr_id]
-                cluster_movements[curr_id] = cluster_movements.get(prev_id, 0) + np.linalg.norm(
-                    previous_clusters[prev_id] - current_clusters[curr_id][0]
+                movement_distance = np.linalg.norm(
+                    np.array(previous_clusters[prev_id]) - np.array(current_clusters[curr_id][0])
                 )
-        else:
-            matched_clusters = {label: data for label, data in current_clusters.items()}
-
-        # 이동량 기준 필터링 제거
-        tracked_clusters.append(matched_clusters)
+                print(f"Frame {frame_id}: Cluster {prev_id} -> {curr_id}, Movement Distance: {movement_distance}")
+                if movement_distance > movement_threshold:
+                    moving_clusters[curr_id] = current_clusters[curr_id]
+                matched_clusters[curr_id] = current_clusters[curr_id]
 
         # 현재 클러스터 갱신
         previous_clusters = {label: data[0] for label, data in matched_clusters.items()}
 
+        # 이동한 클러스터만 추적
+        tracked_clusters.append(moving_clusters)
+
     return tracked_clusters
+
+def is_person(cluster_data, min_size=20, max_size=5000):
+    """클러스터가 사람으로 간주될 수 있는지 확인"""
+    cluster_pcd = cluster_data[1]
+    size = len(cluster_pcd.points)
+    return min_size <= size <= max_size
 
 # 단일 시나리오 처리
 print(f"Processing scenario: {scenario_name}")
@@ -101,17 +109,17 @@ for pcd_file in pcd_files:
     pcd = o3d.io.read_point_cloud(pcd_file)
 
     # 1. 다운샘플링
-    pcd_downsampled = downsample(pcd, voxel_size=0.1)
+    pcd_downsampled = downsample(pcd, voxel_size=0.05)  # 기존 0.1에서 더 정밀하게 변경
 
     # 2. 노이즈 제거
-    pcd_cleaned = remove_noise(pcd_downsampled, sor_neighbors=10, sor_std_ratio=2.0, ror_points=6, ror_radius=0.2)
+    pcd_cleaned = remove_noise(pcd_downsampled, sor_neighbors=15, sor_std_ratio=1.5, ror_points=10, ror_radius=0.15)
 
     # 3. 도로 제거
-    ground, non_ground = remove_ground(pcd_cleaned, distance_threshold=0.2, ransac_n=3, num_iterations=1000)
+    ground, non_ground = remove_ground(pcd_cleaned, distance_threshold=0.1, ransac_n=3, num_iterations=1000)
 
     # 4. 클러스터링
-    labels = apply_dbscan(non_ground, eps=1.0, min_points=20)
-    print(f"Number of clusters: {len(np.unique(labels)) - 1}")  # 클러스터 개수 확인
+    labels = apply_dbscan(non_ground, eps=0.5, min_points=10)  # eps와 min_points를 조정
+    print(f"Number of clusters: {len(np.unique(labels)) - 1}")
 
     # 5. 클러스터 중심점 계산
     current_clusters = process_pcd_for_rendering(non_ground, labels)
@@ -120,33 +128,23 @@ for pcd_file in pcd_files:
 
     all_frames.append(current_clusters)
 
-    print(f"Original points: {len(pcd.points)}")
-    print(f"After downsampling: {len(pcd_downsampled.points)}")
-    print(f"After noise removal: {len(pcd_cleaned.points)}")
-    print(f"After ground removal: {len(non_ground.points)}")
-    unique_labels = np.unique(labels)
-    print(f"Clusters detected (excluding noise): {len(unique_labels) - 1}")
-
-
 # 6. 프레임 간 클러스터 이동량 추적
-tracked_clusters = calculate_cluster_movements(all_frames, movement_threshold=0.5, interval=frame_interval)
+tracked_clusters = calculate_cluster_movements(all_frames, movement_threshold=0.5)
 
 # 7. 비디오 생성
 for frame_id, frame_clusters in enumerate(tracked_clusters):
-    pcd = o3d.io.read_point_cloud(pcd_files[frame_id * frame_interval])
+    pcd = o3d.io.read_point_cloud(pcd_files[frame_id])
     bounding_boxes = []
 
-    for label, (centroid, cluster_pcd) in frame_clusters.items():
-        print(f"Label: {label}, Cluster Size: {len(cluster_pcd.points)}")
-
+    for label, cluster_data in frame_clusters.items():
+        cluster_pcd = cluster_data[1]
         bbox = cluster_pcd.get_axis_aligned_bounding_box()
-        bbox.color = (1, 0, 0)
-        bounding_boxes.append(bbox)
-        last_valid_bbox = bbox  # 최신 유효 바운딩 박스 저장
 
-    # 유효한 바운딩 박스가 없는 경우 이전 바운딩 박스를 유지
-    if not bounding_boxes and last_valid_bbox:
-        bounding_boxes = [last_valid_bbox]
+        # 모든 클러스터 바운딩 박스 표시
+        bbox.color = (0, 1, 0)  # 기본 색상: 초록색
+        if is_person(cluster_data):  # 사람이면 빨간색
+            bbox.color = (1, 0, 0)
+        bounding_boxes.append(bbox)
 
     print(f"Number of bounding boxes: {len(bounding_boxes)}")
 
