@@ -31,6 +31,10 @@ video_path = '/Users/eunchaelin/Desktop/MyFolder/Korea University/4-2/Autonomous
 frame_width, frame_height = 1280, 720
 fps = 10
 
+last_valid_bbox = None  # 이전 프레임의 유효한 바운딩 박스 저장
+
+frame_interval = 5  # 프레임 간 이동량 계산 간격
+
 def render_to_frame(pcd, bounding_boxes, width=1280, height=720):
     """PCD와 바운딩 박스를 렌더링하여 프레임으로 반환"""
     vis = o3d.visualization.Visualizer()
@@ -38,12 +42,6 @@ def render_to_frame(pcd, bounding_boxes, width=1280, height=720):
     vis.add_geometry(pcd)
     for bbox in bounding_boxes:
         vis.add_geometry(bbox)
-    # 고정된 뷰 설정
-    view_control = vis.get_view_control()
-    view_control.set_lookat([0, 0, 0])  # 카메라가 바라보는 중심점
-    view_control.set_zoom(0.8)  # 고정된 줌 레벨
-    view_control.set_up([0, -1, 0])  # 위쪽 방향 벡터
-    
     vis.poll_events()
     vis.update_renderer()
 
@@ -53,15 +51,13 @@ def render_to_frame(pcd, bounding_boxes, width=1280, height=720):
     vis.destroy_window()
     return frame.astype(np.uint8)
 
-def calculate_cluster_movements(frames, movement_threshold=0.5):
-    """
-    여러 프레임의 클러스터 중심점 변화를 추적하고 이동량 계산.
-    """
+def calculate_cluster_movements(frames, movement_threshold=0.5, interval=3):
     tracked_clusters = []
     previous_clusters = {}
     cluster_movements = {}
 
-    for frame_id, current_clusters in enumerate(frames):
+    for frame_id in range(0, len(frames), interval):
+        current_clusters = frames[frame_id]
         matched_clusters = {}
 
         if previous_clusters:
@@ -86,10 +82,8 @@ def calculate_cluster_movements(frames, movement_threshold=0.5):
         else:
             matched_clusters = {label: data for label, data in current_clusters.items()}
 
-        # 이동량 기준 필터링: 이동량이 가장 큰 클러스터 선택
-        if matched_clusters:
-            max_movement_cluster = max(matched_clusters.items(), key=lambda x: cluster_movements.get(x[0], 0))
-            tracked_clusters.append({max_movement_cluster[0]: max_movement_cluster[1]})
+        # 이동량 기준 필터링 제거
+        tracked_clusters.append(matched_clusters)
 
         # 현재 클러스터 갱신
         previous_clusters = {label: data[0] for label, data in matched_clusters.items()}
@@ -107,33 +101,54 @@ for pcd_file in pcd_files:
     pcd = o3d.io.read_point_cloud(pcd_file)
 
     # 1. 다운샘플링
-    pcd_downsampled = downsample(pcd, voxel_size=0.5)
+    pcd_downsampled = downsample(pcd, voxel_size=0.1)
 
     # 2. 노이즈 제거
-    pcd_cleaned = remove_noise(pcd_downsampled, sor_neighbors=20, sor_std_ratio=1.0, ror_points=6, ror_radius=0.5)
+    pcd_cleaned = remove_noise(pcd_downsampled, sor_neighbors=10, sor_std_ratio=2.0, ror_points=6, ror_radius=0.2)
 
     # 3. 도로 제거
-    ground, non_ground = remove_ground(pcd_cleaned, distance_threshold=0.1, ransac_n=3, num_iterations=1000)
+    ground, non_ground = remove_ground(pcd_cleaned, distance_threshold=0.2, ransac_n=3, num_iterations=1000)
 
     # 4. 클러스터링
-    labels = apply_dbscan(non_ground, eps=1.0, min_points=10)
+    labels = apply_dbscan(non_ground, eps=1.0, min_points=20)
+    print(f"Number of clusters: {len(np.unique(labels)) - 1}")  # 클러스터 개수 확인
 
     # 5. 클러스터 중심점 계산
     current_clusters = process_pcd_for_rendering(non_ground, labels)
+    if not current_clusters:
+        print("No clusters detected for this frame.")
+
     all_frames.append(current_clusters)
 
+    print(f"Original points: {len(pcd.points)}")
+    print(f"After downsampling: {len(pcd_downsampled.points)}")
+    print(f"After noise removal: {len(pcd_cleaned.points)}")
+    print(f"After ground removal: {len(non_ground.points)}")
+    unique_labels = np.unique(labels)
+    print(f"Clusters detected (excluding noise): {len(unique_labels) - 1}")
+
+
 # 6. 프레임 간 클러스터 이동량 추적
-tracked_clusters = calculate_cluster_movements(all_frames, movement_threshold=0.5)
+tracked_clusters = calculate_cluster_movements(all_frames, movement_threshold=0.5, interval=frame_interval)
 
 # 7. 비디오 생성
 for frame_id, frame_clusters in enumerate(tracked_clusters):
-    pcd = o3d.io.read_point_cloud(pcd_files[frame_id])
+    pcd = o3d.io.read_point_cloud(pcd_files[frame_id * frame_interval])
     bounding_boxes = []
 
     for label, (centroid, cluster_pcd) in frame_clusters.items():
+        print(f"Label: {label}, Cluster Size: {len(cluster_pcd.points)}")
+
         bbox = cluster_pcd.get_axis_aligned_bounding_box()
         bbox.color = (1, 0, 0)
         bounding_boxes.append(bbox)
+        last_valid_bbox = bbox  # 최신 유효 바운딩 박스 저장
+
+    # 유효한 바운딩 박스가 없는 경우 이전 바운딩 박스를 유지
+    if not bounding_boxes and last_valid_bbox:
+        bounding_boxes = [last_valid_bbox]
+
+    print(f"Number of bounding boxes: {len(bounding_boxes)}")
 
     frame = render_to_frame(pcd, bounding_boxes, frame_width, frame_height)
     frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
