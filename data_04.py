@@ -16,21 +16,21 @@ def preprocess_point_cloud(pcd, voxel_size=0.3, eps=0.2, min_samples=10):
     pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
 
     # ROR (Radius Outlier Removal)
-    pcd, _ = pcd.remove_radius_outlier(nb_points=16, radius=0.5)
+    pcd, _ = pcd.remove_radius_outlier(nb_points=6, radius=1.2)
 
     # 다운샘플링
     pcd = pcd.voxel_down_sample(voxel_size=voxel_size)
+
+    # RANSAC을 사용하여 평면 추정
+    plane_model, inliers = pcd.segment_plane(distance_threshold=0.1, ransac_n=3, num_iterations=2000)
+
+    # 평면에 속하지 않는 포인트 추출
+    pcd = pcd.select_by_index(inliers, invert=True)
 
     # 클러스터링
     points = np.asarray(pcd.points)
     clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(points)
     labels = clustering.labels_
-
-    # 클러스터 컬러링
-    max_label = labels.max() + 1
-    colors = np.random.uniform(0, 1, size=(max_label, 3))
-    colors = np.vstack([colors, [0, 0, 0]])  # 노이즈는 검정색으로 처리
-    pcd.colors = o3d.utility.Vector3dVector(colors[labels])
 
     return pcd, labels
 
@@ -48,7 +48,7 @@ def align_point_cloud(pcd, reference_pcd):
 # 모션 기반 클러스터 식별
 movement_vectors = defaultdict(list)
 
-def is_person_by_motion(cluster_id, current_centroid, direction_threshold=0.8, N=10):
+def is_person_by_motion(cluster_id, current_centroid, direction_threshold=0.6, N=5):
     if cluster_id not in movement_vectors:
         movement_vectors[cluster_id].append(current_centroid)
         return False
@@ -149,4 +149,4 @@ output_dir = os.path.join(output_root_dir, scenario)
 os.makedirs(output_dir, exist_ok=True)
 
 pcd_files = load_pcd_files(pcd_dir)
-render_pcd_and_save_video(pcd_files, output_dir, scenario, frame_selection_step=8)
+render_pcd_and_save_video(pcd_files, output_dir, scenario, frame_selection_step=10)

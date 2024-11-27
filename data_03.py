@@ -48,7 +48,7 @@ def align_point_cloud(pcd, reference_pcd):
 # 모션 기반 클러스터 식별
 movement_vectors = defaultdict(list)
 
-def is_person_by_motion(cluster_id, current_centroid, direction_threshold=0.8, N=10):
+def is_person_by_motion(cluster_id, current_centroid, direction_threshold=0.8, N=5):
     if cluster_id not in movement_vectors:
         movement_vectors[cluster_id].append(current_centroid)
         return False
@@ -150,4 +150,4 @@ output_dir = os.path.join(output_root_dir, scenario)
 os.makedirs(output_dir, exist_ok=True)
 
 pcd_files = load_pcd_files(pcd_dir)
-render_pcd_and_save_video(pcd_files, output_dir, scenario, frame_selection_step=10)
+render_pcd_and_save_video(pcd_files, output_dir, scenario, frame_selection_step=20)

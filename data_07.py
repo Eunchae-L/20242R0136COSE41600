@@ -11,14 +11,9 @@ def load_pcd_files(pcd_dir):
     return pcd_files
 
 # Point Cloud 전처리: SOR, ROR, 다운샘플링, 클러스터링
-def preprocess_point_cloud(pcd, voxel_size=0.2, eps=0.2, min_samples=10):
-    # SOR (Statistical Outlier Removal)
+def preprocess_point_cloud(pcd, voxel_size=0.1, eps=0.2, min_samples=10):
     pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
-
-    # ROR (Radius Outlier Removal)
-    pcd, _ = pcd.remove_radius_outlier(nb_points=16, radius=0.5)
-
-    # 다운샘플링
+    pcd, _ = pcd.remove_radius_outlier(nb_points=6, radius=1.2)
     pcd = pcd.voxel_down_sample(voxel_size=voxel_size)
 
     # 클러스터링
@@ -48,7 +43,7 @@ def align_point_cloud(pcd, reference_pcd):
 # 모션 기반 클러스터 식별
 movement_vectors = defaultdict(list)
 
-def is_person_by_motion(cluster_id, current_centroid, direction_threshold=0.8, N=10):
+def is_person_by_motion(cluster_id, current_centroid, direction_threshold=0.05, N=1):
     if cluster_id not in movement_vectors:
         movement_vectors[cluster_id].append(current_centroid)
         return False
@@ -84,6 +79,7 @@ def render_pcd_and_save_video(pcd_files, output_dir, video_name, frame_selection
     for idx, pcd_file in enumerate(pcd_files):
         if idx % frame_selection_step != 0:
             continue
+        print(f"Processing frame {idx + 1}/{len(pcd_files)}: {pcd_file}")
 
         # PCD 로드 및 전처리
         pcd = o3d.io.read_point_cloud(pcd_file)
@@ -105,7 +101,7 @@ def render_pcd_and_save_video(pcd_files, output_dir, video_name, frame_selection
 
             if is_person_by_motion(cluster_id, current_centroid):
                 bbox = cluster_pcd.get_axis_aligned_bounding_box()
-                expand_size = np.array([0.5, 0.5, 0.5])  # 각 축 방향으로 0.5씩 확장
+                expand_size = np.array([2,2,2])  # 각 축 방향으로 0.5씩 확장
 
                 # min_bound와 max_bound 복사 후 수정
                 new_min_bound = bbox.min_bound - expand_size
@@ -138,7 +134,7 @@ def render_pcd_and_save_video(pcd_files, output_dir, video_name, frame_selection
     print(f"Video saved to {os.path.join(output_dir, video_name)}.mp4")
 
 # 시나리오 설정 및 실행
-scenario = "02_straight_duck_walk"
+scenario = "07_straight_walk"
 input_root_dir = "./data"
 output_root_dir = "./output"
 os.makedirs(output_root_dir, exist_ok=True)
