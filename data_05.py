@@ -43,7 +43,7 @@ def align_point_cloud(pcd, reference_pcd):
 # 모션 기반 클러스터 식별
 movement_vectors = defaultdict(list)
 
-def is_person_by_motion(cluster_id, current_centroid, direction_threshold=0.05, N=1):
+def is_person_by_motion(cluster_id, current_centroid, direction_threshold=0.1, N=3):
     if cluster_id not in movement_vectors:
         movement_vectors[cluster_id].append(current_centroid)
         return False
